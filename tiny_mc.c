@@ -30,15 +30,28 @@ static float heat2[SHELLS];
 static unsigned int g_seed;
 
 // Used to seed the generator.
-inline void fast_srand(int seed)
+static inline void fast_srand(int seed)
 {
     g_seed = seed;
 }
 // Compute a pseudorandom integer.
 // Output value in range [0, 32767]
-inline int fast_rand(void)
+static inline int fast_rand(void)
 {
     g_seed = (214013 * g_seed + 2531011);
+    return (g_seed >> 16) & 0x7FFF;
+}
+
+static inline void very_fast_srand(int seed)
+{
+    g_seed = seed;
+}
+
+// Compute a pseudorandom integer.
+// Output value in range [0, 32767]
+static inline int very_fast_rand(void)
+{
+    g_seed = (1103515245 * g_seed) % 4294967296;
     return (g_seed >> 16) & 0x7FFF;
 }
 
@@ -63,7 +76,7 @@ static void photon(void)
     float weight = 1.0f;
 
     for (;;) {
-        float t = -logf(fast_rand() / (float)32768); /* move */
+        float t = -logf(very_fast_rand() / (float)32768); /* move */
         x += t * u;
         y += t * v;
         z += t * w;
@@ -79,8 +92,8 @@ static void photon(void)
         /* New direction, rejection method */
         float xi1, xi2;
         do {
-            xi1 = 2.0f * fast_rand() / (float)32768 - 1.0f;
-            xi2 = 2.0f * fast_rand() / (float)32768 - 1.0f;
+            xi1 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+            xi2 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
             t = xi1 * xi1 + xi2 * xi2;
         } while (1.0f < t);
         u = 2.0f * t - 1.0f;
@@ -88,7 +101,7 @@ static void photon(void)
         w = xi2 * sqrtf((1.0f - u * u) / t);
 
         if (weight < 0.001f) { /* roulette */
-            if (fast_rand() / (float)32768 > 0.1f)
+            if (very_fast_rand() / (float)32768 > 0.1f)
                 break;
             weight /= 0.1f;
         }
@@ -100,6 +113,7 @@ static void photon(void)
  * Main matter
  ***/
 
+
 int main(void)
 {
     // heading
@@ -109,7 +123,7 @@ int main(void)
     printf("# Photons    = %8d\n#\n", PHOTONS);
 
     // configure RNG
-    fast_srand(SEED);
+    very_fast_srand(SEED);
     // start timer
     double start = wtime();
     // simulation
@@ -137,6 +151,7 @@ int main(void)
     return 0;
 }
 /*
+
 #define N (1 << 27)
 
 int main(void)
@@ -145,11 +160,22 @@ int main(void)
 
     int rnd = 0;
     double start = wtime();
+    double end = wtime();
+
+    start = wtime();
+    very_fast_srand(SEED);
+    for (int i = 0; i < N; ++i) {
+        rnd = very_fast_rand();
+    }
+    end = wtime();
+    printf("time for very_fast_rand %lf with N = %d, rng per second: %lf\n", end - start, N, N / (end - start));
+
+    start = wtime();
     fast_srand(SEED);
     for (int i = 0; i < N; ++i) {
         rnd = fast_rand();
     }
-    double end = wtime();
+    end = wtime();
     printf("time for fast_rand %lf with N = %d, rng per second: %lf\n", end - start, N, N / (end - start));
 
 
@@ -160,5 +186,7 @@ int main(void)
     }
     end = wtime();
     printf("time for rand %lf with N = %d, rng per second: %lf\n", end - start, N, N / (end - start));
+
     return 0;
-}*/
+}
+*/
