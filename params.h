@@ -8,6 +8,8 @@
 
 #ifndef PHOTONS
 #define PHOTONS 32768 // 32K photons
+//#define PHOTONS 65536 // 64K photons
+//#define PHOTONS 131072 // 128K photons
 #endif
 
 #ifndef MU_A
@@ -25,4 +27,3 @@
 #ifndef SEED
 #define SEED (time(NULL)) // random seed
 #endif
-

@@ -5,7 +5,7 @@
  * Adaptado para CP2014, Nicolas Wolovick
  */
 
-#define _XOPEN_SOURCE 500  // M_PI
+#define _XOPEN_SOURCE 500 // M_PI
 
 #include "params.h"
 #include "wtime.h"
@@ -14,6 +14,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#define foo4random() (arc4random() % ((unsigned)RAND_MAX + 1))
 
 char t1[] = "Tiny Monte Carlo by Scott Prahl (http://omlc.ogi.edu)";
 char t2[] = "1 W Point Source Heating in Infinite Isotropic Scattering Medium";
@@ -25,6 +27,21 @@ char t3[] = "CPU version, adapted for PEAGPGPU by Gustavo Castellano"
 static float heat[SHELLS];
 static float heat2[SHELLS];
 
+static unsigned int g_seed;
+
+// Used to seed the generator.
+inline void fast_srand(int seed)
+{
+    g_seed = seed;
+}
+// Compute a pseudorandom integer.
+// Output value in range [0, 32767]
+inline int fast_rand(void)
+{
+    g_seed = (214013 * g_seed + 2531011);
+    return (g_seed >> 16) & 0x7FFF;
+}
+
 
 /***
  * Photon
@@ -34,6 +51,7 @@ static void photon(void)
 {
     const float albedo = MU_S / (MU_S + MU_A);
     const float shells_per_mfp = 1e4 / MICRONS_PER_SHELL / (MU_A + MU_S);
+
 
     /* launch */
     float x = 0.0f;
@@ -45,7 +63,7 @@ static void photon(void)
     float weight = 1.0f;
 
     for (;;) {
-        float t = -logf(rand() / (float)RAND_MAX); /* move */
+        float t = -logf(fast_rand() / (float)32768); /* move */
         x += t * u;
         y += t * v;
         z += t * w;
@@ -61,8 +79,8 @@ static void photon(void)
         /* New direction, rejection method */
         float xi1, xi2;
         do {
-            xi1 = 2.0f * rand() / (float)RAND_MAX - 1.0f;
-            xi2 = 2.0f * rand() / (float)RAND_MAX - 1.0f;
+            xi1 = 2.0f * fast_rand() / (float)32768 - 1.0f;
+            xi2 = 2.0f * fast_rand() / (float)32768 - 1.0f;
             t = xi1 * xi1 + xi2 * xi2;
         } while (1.0f < t);
         u = 2.0f * t - 1.0f;
@@ -70,7 +88,7 @@ static void photon(void)
         w = xi2 * sqrtf((1.0f - u * u) / t);
 
         if (weight < 0.001f) { /* roulette */
-            if (rand() / (float)RAND_MAX > 0.1f)
+            if (fast_rand() / (float)32768 > 0.1f)
                 break;
             weight /= 0.1f;
         }
@@ -91,7 +109,7 @@ int main(void)
     printf("# Photons    = %8d\n#\n", PHOTONS);
 
     // configure RNG
-    srand(SEED);
+    fast_srand(SEED);
     // start timer
     double start = wtime();
     // simulation
@@ -118,3 +136,29 @@ int main(void)
 
     return 0;
 }
+/*
+#define N (1 << 27)
+
+int main(void)
+{
+    // test
+
+    int rnd = 0;
+    double start = wtime();
+    fast_srand(SEED);
+    for (int i = 0; i < N; ++i) {
+        rnd = fast_rand();
+    }
+    double end = wtime();
+    printf("time for fast_rand %lf with N = %d, rng per second: %lf\n", end - start, N, N / (end - start));
+
+
+    start = wtime();
+    srand(SEED);
+    for (int i = 0; i < N; ++i) {
+        rnd = rand();
+    }
+    end = wtime();
+    printf("time for rand %lf with N = %d, rng per second: %lf\n", end - start, N, N / (end - start));
+    return 0;
+}*/
