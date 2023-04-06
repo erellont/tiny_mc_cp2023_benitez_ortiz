@@ -11,6 +11,7 @@
 #include "wtime.h"
 
 #include <assert.h>
+#include <immintrin.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,6 +57,19 @@ static inline int very_fast_rand(void)
 }
 
 
+float fast_sqrt(float x)
+{
+    union {
+        int i;
+        float x;
+    } u;
+
+    u.x = x;
+    u.i = (1 << 29) + (u.i >> 1) - (1 << 22);
+    return u.x;
+}
+
+
 /***
  * Photon
  ***/
@@ -81,7 +95,7 @@ static void photon(void)
         y += t * v;
         z += t * w;
 
-        unsigned int shell = sqrtf(x * x + y * y + z * z) * shells_per_mfp; /* absorb */
+        unsigned int shell = fast_sqrt(x * x + y * y + z * z) * shells_per_mfp; /* absorb */
         if (shell > SHELLS - 1) {
             shell = SHELLS - 1;
         }
@@ -97,8 +111,8 @@ static void photon(void)
             t = xi1 * xi1 + xi2 * xi2;
         } while (1.0f < t);
         u = 2.0f * t - 1.0f;
-        v = xi1 * sqrtf((1.0f - u * u) / t);
-        w = xi2 * sqrtf((1.0f - u * u) / t);
+        v = xi1 * fast_sqrt((1.0f - u * u) / t);
+        w = xi2 * fast_sqrt((1.0f - u * u) / t);
 
         if (weight < 0.001f) { /* roulette */
             if (very_fast_rand() / (float)32768 > 0.1f)
