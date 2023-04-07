@@ -24,9 +24,11 @@ char t3[] = "CPU version, adapted for PEAGPGPU by Gustavo Castellano"
             " and Nicolas Wolovick";
 
 
-// global state, heat and heat square in each shell
+// global state, heat and heat square in each
+
 static float heat[SHELLS];
 static float heat2[SHELLS];
+
 
 static unsigned int g_seed;
 
@@ -70,6 +72,42 @@ float fast_sqrt(float x)
 }
 
 
+double fastPow(double a, double b)
+{
+    union {
+        double d;
+        int x[2];
+    } u = { a };
+    u.x[1] = (int)(b * (u.x[1] - 1072632447) + 1072632447);
+    u.x[0] = 0;
+    return u.d;
+}
+
+float very_fast_sqrt(float x)
+{
+    __m256 x_avx = _mm256_set1_ps(x);
+    __m256 inv_sqrt_avx = _mm256_rsqrt_ps(x_avx);
+    __m256 result_avx = _mm256_mul_ps(x_avx, inv_sqrt_avx);
+    return _mm256_cvtss_f32(result_avx);
+}
+
+inline float fast_logf(float x)
+{
+    float y = x - 0.5f;
+    float y2 = y * y;
+    float y3 = y * y2;
+    float y4 = y * y3;
+    float y5 = y * y4;
+    float y6 = y * y5;
+    float y7 = y * y6;
+    float y8 = y * y7;
+    return y / 0.5f - y2 / (2 * 0.5f * 0.5f) + y3 / (3 * 0.5f * 0.5f * 0.5f)
+        - y4 / (4 * 0.5f * 0.5f * 0.5f * 0.5f) + y5 / (5 * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f)
+        - y6 / (6 * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f)
+        + y7 / (7 * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f)
+        - y8 / (8 * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f);
+}
+
 /***
  * Photon
  ***/
@@ -78,7 +116,6 @@ static void photon(void)
 {
     const float albedo = MU_S / (MU_S + MU_A);
     const float shells_per_mfp = 1e4 / MICRONS_PER_SHELL / (MU_A + MU_S);
-
 
     /* launch */
     float x = 0.0f;
@@ -89,19 +126,55 @@ static void photon(void)
     float w = 1.0f;
     float weight = 1.0f;
 
+
+    /* AVX2 constants */
+    const __m256 albedo_v = _mm256_set1_ps(albedo);
+    const __m256 one_v = _mm256_set1_ps(1.0f);
+
     for (;;) {
-        float t = -logf(very_fast_rand() / (float)32768); /* move */
+        /* move */
+        const float rand1 = very_fast_rand() / (float)32768;
+        float t = -fast_logf(rand1);
         x += t * u;
         y += t * v;
         z += t * w;
 
-        unsigned int shell = fast_sqrt(x * x + y * y + z * z) * shells_per_mfp; /* absorb */
-        if (shell > SHELLS - 1) {
-            shell = SHELLS - 1;
-        }
-        heat[shell] += (1.0f - albedo) * weight;
-        heat2[shell] += (1.0f - albedo) * (1.0f - albedo) * weight * weight; /* add up squares */
+        /* absorb */
+        const unsigned int shell = fast_sqrt(x * x + y * y + z * z) * shells_per_mfp;
+
+        int shell_index = shell > SHELLS - 1 ? SHELLS - 1 : shell;
+        /* easy way */
+        /*
+        heat[shell_index] += weight * (1.0f - albedo);
+        heat2[shell_index] += weight * weight * (1.0f - albedo) * (1.0f - albedo);
         weight *= albedo;
+        */
+        /*  */
+
+
+        /*using avx2 operations*/
+        __m256 heat_v = _mm256_load_ps(&heat[shell]);
+        __m256 heat2_v = _mm256_load_ps(&heat2[shell]);
+
+        __m256 weight_v = _mm256_set1_ps(weight);
+        __m256 tmp_v = _mm256_sub_ps(one_v, albedo_v);
+        tmp_v = _mm256_mul_ps(tmp_v, weight_v);
+        __m256 tmp2_v = _mm256_mul_ps(tmp_v, tmp_v);
+        // tmp_v to float
+
+        heat_v = _mm256_add_ps(heat_v, tmp_v);
+        heat2_v = _mm256_add_ps(heat2_v, tmp2_v);
+        // save heat and heat2
+
+        heat[shell_index] = _mm256_cvtss_f32(heat_v);
+
+
+        heat2[shell_index] = _mm256_cvtss_f32(heat2_v);
+
+        weight_v = _mm256_mul_ps(weight_v, albedo_v);
+        weight = _mm256_cvtss_f32(weight_v);
+        /*  */
+
 
         /* New direction, rejection method */
         float xi1, xi2;
@@ -158,12 +231,24 @@ int main(void)
     for (unsigned int i = 0; i < SHELLS - 1; ++i) {
         printf("%6.0f\t%12.5f\t%12.5f\n", i * (float)MICRONS_PER_SHELL,
                heat[i] / t / (i * i + i + 1.0 / 3.0),
-               sqrt(heat2[i] - heat[i] * heat[i] / PHOTONS) / t / (i * i + i + 1.0f / 3.0f));
+               fast_sqrt(heat2[i] - heat[i] * heat[i] / PHOTONS) / t / (i * i + i + 1.0f / 3.0f));
     }
     printf("# extra\t%12.5f\n", heat[SHELLS - 1] / PHOTONS);
 
     return 0;
 }
+/*
+int main(void)
+{
+    int N = 100;
+    // test of Q_sqrt function
+    printf("test of Q_sqrt function\n");
+    float x = 100.0f;
+    float y = 0.0f;
+    y = fast_sqrt(x);
+    printf("Q_sqrt(%f) = %f\n", x, y);
+    return 0;
+}*/
 /*
 
 #define N (1 << 27)
