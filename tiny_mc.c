@@ -6,6 +6,8 @@
  */
 
 #define _XOPEN_SOURCE 500 // M_PI
+#define INT_PREC 6
+#define TEST_SIZE (1 << 27)
 
 #include "params.h"
 #include "wtime.h"
@@ -28,6 +30,7 @@ char t3[] = "CPU version, adapted for PEAGPGPU by Gustavo Castellano"
 
 static float heat[SHELLS];
 static float heat2[SHELLS];
+static float LOG2 = 0.6931471f;
 
 
 static unsigned int g_seed;
@@ -108,6 +111,256 @@ inline float fast_logf(float x)
         - y8 / (8 * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f * 0.5f);
 }
 
+inline float mFast_Log2(float val)
+{
+    union {
+        float val;
+        int32_t x;
+    } u = { val };
+    register float log_2 = (float)(((u.x >> 23) & 255) - 128);
+    u.x &= ~(255 << 23);
+    u.x += 127 << 23;
+    log_2 += ((-0.3358287811f) * u.val + 2.0f) * u.val - 0.65871759316667f;
+    return (log_2);
+}
+
+
+inline float very_fast_logf(float x)
+{
+    // using the log2 approximation
+    // log_2(x)* cte = t
+    float t = mFast_Log2(x) * LOG2;
+    return t;
+}
+
+inline float very_very_fast_logf(float x)
+{
+    // using the taylor expansion serie of log(1+x)
+    // log(1+x) = x - x^2/2 + x^3/3 - x^4/4 + x^5/5
+    float xx = x - 1;
+    float xx2 = xx * xx;
+    float xx3 = xx * xx2;
+    float xx4 = xx * xx3;
+    float xx5 = xx * xx4;
+    float xx6 = xx * xx5;
+
+    return xx - xx2 / 2 + xx3 / 3 - xx4 / 4 + xx5 / 5 - xx6 / 6;
+}
+
+inline float very_very_fast_logf_avx2(float x)
+{
+    __m256 xx = _mm256_set1_ps(x - 1);
+    __m256 xx2 = _mm256_mul_ps(xx, xx);
+    __m256 xx3 = _mm256_mul_ps(xx2, xx);
+    __m256 xx4 = _mm256_mul_ps(xx2, xx2);
+    __m256 xx5 = _mm256_mul_ps(xx3, xx2);
+    __m256 xx6 = _mm256_mul_ps(xx3, xx3);
+
+    __m256 term1 = _mm256_sub_ps(xx, _mm256_mul_ps(xx2, _mm256_set1_ps(0.5f)));
+    __m256 term2 = _mm256_add_ps(xx3, _mm256_mul_ps(xx5, _mm256_set1_ps(0.2f)));
+    __m256 term3 = _mm256_sub_ps(xx4, _mm256_mul_ps(xx3, _mm256_set1_ps(0.25f)));
+    __m256 term4 = _mm256_add_ps(_mm256_mul_ps(xx5, _mm256_set1_ps(0.2f)), _mm256_mul_ps(xx4, _mm256_set1_ps(0.2f)));
+    __m256 term5 = _mm256_sub_ps(_mm256_mul_ps(xx6, _mm256_set1_ps(0.16666666666666666666666666666667f)), _mm256_mul_ps(xx5, _mm256_set1_ps(0.16666666666666666666666666666667f)));
+
+    __m256 result = _mm256_add_ps(term1, term2);
+    result = _mm256_add_ps(result, term3);
+    result = _mm256_add_ps(result, term4);
+    result = _mm256_add_ps(result, term5);
+
+    float res[8];
+    _mm256_storeu_ps(res, result);
+
+    return res[0];
+}
+
+inline float very_very_fast_logf_avx2_2(float x)
+{
+    __m256 xx = _mm256_set1_ps(x - 1);
+    __m256 one = _mm256_set1_ps(1.0f);
+    __m256 two = _mm256_set1_ps(2.0f);
+    __m256 three = _mm256_set1_ps(3.0f);
+    __m256 four = _mm256_set1_ps(4.0f);
+    __m256 five = _mm256_set1_ps(5.0f);
+
+
+    __m256 xx2 = _mm256_mul_ps(xx, xx);
+    __m256 xx3 = _mm256_mul_ps(xx, xx2);
+    __m256 xx4 = _mm256_mul_ps(xx, xx3);
+    __m256 xx5 = _mm256_mul_ps(xx, xx4);
+
+    __m256 res1 = _mm256_div_ps(xx2, two);
+    __m256 res2 = _mm256_div_ps(xx3, three);
+    __m256 res3 = _mm256_div_ps(xx4, four);
+    __m256 res4 = _mm256_div_ps(xx5, five);
+
+    __m256 result = _mm256_sub_ps(xx, res1);
+    result = _mm256_add_ps(result, res2);
+    result = _mm256_sub_ps(result, res3);
+    result = _mm256_add_ps(result, res4);
+    // result to float
+    float res[8];
+    _mm256_storeu_ps(res, result);
+
+
+    return res[0];
+}
+/*********************************
+ *******SIMPSON'S 3/8 RULE********
+ ********************************/
+
+inline float f(float x)
+{
+    return -1 / x;
+}
+
+
+float simpson38(float a)
+{
+    int n = INT_PREC;
+    float h = (1 - a) / n;
+    float x;
+    float sum = 0;
+    for (int i = 1; i < n; i++) {
+        x = a + i * h;
+        if (i % 3 == 0)
+            sum += 2 * f(x);
+        else
+            sum += 3 * f(x);
+    }
+    return (3 * h / 8) * (f(a) - 1 + sum);
+}
+/*
+int main()
+{
+    // test simpson38 against fast_logf
+    very_fast_srand(SEED);
+    // speed test comparison
+    // start timer
+    // print test size
+    printf("Test size: %d\n", TEST_SIZE);
+    double start = wtime();
+
+    for (int i = 0; i < TEST_SIZE; i++) {
+        int rn = very_fast_rand();
+        if (rn == 0)
+            rn = 1;
+
+        float x = rn / (float)32767;
+        float z = simpson38(x);
+    }
+    // end timer
+    double end = wtime();
+    printf("Simpson38 time: %f\n", end - start);
+
+    // start timer
+    start = wtime();
+    for (int i = 0; i < TEST_SIZE; i++) {
+        int rn = very_fast_rand();
+        if (rn == 0)
+            rn = 1;
+
+        float x = rn / (float)32767;
+        float z = logf(x);
+    }
+    // end timer
+    end = wtime();
+    printf("logf time: %f\n", end - start);
+
+    // start timer
+    start = wtime();
+    for (int i = 0; i < TEST_SIZE; i++) {
+        int rn = very_fast_rand();
+        if (rn == 0)
+            rn = 1;
+
+        float x = rn / (float)32767;
+        float z = fast_logf(x);
+    }
+    // end timer
+    end = wtime();
+    printf("fast_logf time: %f\n", end - start);
+
+    // start timer
+    start = wtime();
+    for (int i = 0; i < TEST_SIZE; i++) {
+        int rn = very_fast_rand();
+        if (rn == 0)
+            rn = 1;
+
+        float x = rn / (float)32767;
+        float z = very_fast_logf(x);
+    }
+    // end timer
+    end = wtime();
+    printf("very_fast_logf time: %f\n", end - start);
+
+    // start timer
+    start = wtime();
+    for (int i = 0; i < TEST_SIZE; i++) {
+        int rn = very_fast_rand();
+        if (rn == 0)
+            rn = 1;
+
+        float x = rn / (float)32767;
+        float z = very_very_fast_logf(x);
+    }
+    // end timer
+    end = wtime();
+    printf("very_very_fast_logf time: %f\n", end - start);
+
+    // start timer
+    start = wtime();
+    for (int i = 0; i < TEST_SIZE; i++) {
+        int rn = very_fast_rand();
+        if (rn == 0)
+            rn = 1;
+
+        float x = rn / (float)32767;
+        float z = very_very_fast_logf_avx2(x);
+    }
+    // end timer
+    end = wtime();
+    printf("very_very_fast_logf_avx2 time: %f\n", end - start);
+
+    // start timer
+    start = wtime();
+    for (int i = 0; i < TEST_SIZE; i++) {
+        int rn = very_fast_rand();
+        if (rn == 0)
+            rn = 1;
+
+        float x = rn / (float)32767;
+        float z = very_very_fast_logf_avx2_2(x);
+    }
+
+    // end timer
+    end = wtime();
+    printf("very_very_fast_logf_avx2_2 time: %f\n", end - start);
+
+
+    // check correction
+    for (int i = 0; i < 10; i++) {
+        int rnn = very_fast_rand();
+        if (rnn == 0)
+            rnn = 1;
+
+        float xx = rnn / (float)32767;
+        float zz = simpson38(xx);
+        float yy = logf(xx);
+        float ww = fast_logf(xx);
+        float vv = very_fast_logf(xx);
+        float uu = very_very_fast_logf(xx);
+        float ss = very_very_fast_logf_avx2(xx);
+        float tt = very_very_fast_logf_avx2_2(xx);
+        printf("X= %f, logf: %f, fast_logf: %f, very_fast_logf: %f, simpson38: %f, taylor: %f, avx2: %f, avx2_2: %f\n", xx, yy, ww, vv, zz, uu, ss, tt);
+    }
+
+
+    //
+
+    return 0;
+}*/
+
 /***
  * Photon
  ***/
@@ -134,7 +387,8 @@ static void photon(void)
     for (;;) {
         /* move */
         const float rand1 = very_fast_rand() / (float)32768;
-        float t = -fast_logf(rand1);
+        float t = -very_very_fast_logf_avx2(rand1);
+        // float t = -simpson38(rand1);
         x += t * u;
         y += t * v;
         z += t * w;
