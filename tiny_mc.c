@@ -8,6 +8,9 @@
 #define _XOPEN_SOURCE 500 // M_PI
 #define INT_PREC 6
 #define TEST_SIZE (1 << 27)
+#ifndef NAME
+#define NAME 0
+#endif
 
 #include "params.h"
 #include "wtime.h"
@@ -30,7 +33,6 @@ char t3[] = "CPU version, adapted for PEAGPGPU by Gustavo Castellano"
 
 static float heat[SHELLS];
 static float heat2[SHELLS];
-static float LOG2 = 0.6931471f;
 
 
 static unsigned int g_seed;
@@ -86,13 +88,6 @@ double fastPow(double a, double b)
     return u.d;
 }
 
-float very_fast_sqrt(float x)
-{
-    __m256 x_avx = _mm256_set1_ps(x);
-    __m256 inv_sqrt_avx = _mm256_rsqrt_ps(x_avx);
-    __m256 result_avx = _mm256_mul_ps(x_avx, inv_sqrt_avx);
-    return _mm256_cvtss_f32(result_avx);
-}
 
 inline float fast_logf(float x)
 {
@@ -124,14 +119,6 @@ inline float mFast_Log2(float val)
     return (log_2);
 }
 
-
-inline float very_fast_logf(float x)
-{
-    // using the log2 approximation
-    // log_2(x)* cte = t
-    float t = mFast_Log2(x) * LOG2;
-    return t;
-}
 
 inline float very_very_fast_logf(float x)
 {
@@ -173,37 +160,7 @@ inline float very_very_fast_logf_avx2(float x)
     return res[0];
 }
 
-inline float very_very_fast_logf_avx2_2(float x)
-{
-    __m256 xx = _mm256_set1_ps(x - 1);
-    __m256 one = _mm256_set1_ps(1.0f);
-    __m256 two = _mm256_set1_ps(2.0f);
-    __m256 three = _mm256_set1_ps(3.0f);
-    __m256 four = _mm256_set1_ps(4.0f);
-    __m256 five = _mm256_set1_ps(5.0f);
 
-
-    __m256 xx2 = _mm256_mul_ps(xx, xx);
-    __m256 xx3 = _mm256_mul_ps(xx, xx2);
-    __m256 xx4 = _mm256_mul_ps(xx, xx3);
-    __m256 xx5 = _mm256_mul_ps(xx, xx4);
-
-    __m256 res1 = _mm256_div_ps(xx2, two);
-    __m256 res2 = _mm256_div_ps(xx3, three);
-    __m256 res3 = _mm256_div_ps(xx4, four);
-    __m256 res4 = _mm256_div_ps(xx5, five);
-
-    __m256 result = _mm256_sub_ps(xx, res1);
-    result = _mm256_add_ps(result, res2);
-    result = _mm256_sub_ps(result, res3);
-    result = _mm256_add_ps(result, res4);
-    // result to float
-    float res[8];
-    _mm256_storeu_ps(res, result);
-
-
-    return res[0];
-}
 /*********************************
  *******SIMPSON'S 3/8 RULE********
  ********************************/
@@ -489,8 +446,24 @@ int main(void)
     }
     printf("# extra\t%12.5f\n", heat[SHELLS - 1] / PHOTONS);
 
+    // print to csv file to compare later
+    FILE* fp;
+    // set name of file based on NAME
+    char filename[100];
+    sprintf(filename, "heat%i.csv", NAME);
+    fp = fopen(filename, "w");
+    for (unsigned int i = 0; i < SHELLS - 1; ++i) {
+        fprintf(fp, "%6.0f\t%12.5f\t%12.5f\n", i * (float)MICRONS_PER_SHELL,
+                heat[i] / t / (i * i + i + 1.0 / 3.0),
+                fast_sqrt(heat2[i] - heat[i] * heat[i] / PHOTONS) / t / (i * i + i + 1.0f / 3.0f));
+    }
+
+    fclose(fp);
+
+
     return 0;
 }
+
 /*
 int main(void)
 {
