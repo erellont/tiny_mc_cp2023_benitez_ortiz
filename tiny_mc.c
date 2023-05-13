@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <immintrin.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -335,21 +336,29 @@ static void photon(void)
     const float shells_per_mfp = 1e4 / MICRONS_PER_SHELL / (MU_A + MU_S);
 
     /* launch */
-    // float x = 0.0f;
-    // float y = 0.0f;
-    // float z = 0.0f;
+    // float x1 = 0.0f;
+    // float y1 = 0.0f;
+    // float z1 = 0.0f;
+    // float x2 = 0.0f;
+    // float y2 = 0.0f;
+    // float z2 = 0.0f;
 
     // declar 1 avx register with x,y,z in it
     __m256 xyz_v = _mm256_setzero_ps();
 
 
-    // float u = 0.0f;
-    // float v = 0.0f;
-    // float w = 1.0f;
+    float u1 = 0.0f;
+    float v1 = 0.0f;
+    float w1 = 1.0f;
+
+    float u2 = 0.0f;
+    float v2 = 0.0f;
+    float w2 = 1.0f;
 
     __m256 uvw_v = _mm256_set_ps(0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
 
-    float weight = 1.0f;
+    float weight1 = 1.0f;
+    float weight2 = 1.0f;
 
 
     /* AVX2 constants */
@@ -359,91 +368,92 @@ static void photon(void)
     for (;;) {
         /* move */
         const float rand1 = very_fast_rand() / (float)32768;
-        float t = -very_very_fast_logf_avx2(rand1);
+        const float rand2 = very_fast_rand() / (float)32768;
+        float t1 = -very_very_fast_logf_avx2(rand1);
+        float t2 = -very_very_fast_logf_avx2(rand2);
         // float t = -simpson38(rand1);
         /*
         x += t * u;
         y += t * v;
         z += t * w;
         */
-        // calculate t*u, t*v, t*w and store them in xyz_v
-        __m256 t_v = _mm256_set1_ps(t);
+        // calculate x+t*u, y+t*v, z+t*w and store them in xyz_v
+        __m256 t_v = _mm256_set_ps(t1, t1, t1, t1, t2, t2, t2, t2);
         xyz_v = _mm256_fmadd_ps(t_v, uvw_v, xyz_v);
+
 
         // do xyz_v[0]^2 + xyz_v[1]^2 + xyz_v[2]^2 and save it in a float using avx2
 
         __m256 xyz_v2 = _mm256_mul_ps(xyz_v, xyz_v);
-        float k = xyz_v2[0] + xyz_v2[1] + xyz_v2[2];
+        float k1 = xyz_v2[0] + xyz_v2[1] + xyz_v2[2];
+        float k2 = xyz_v2[4] + xyz_v2[5] + xyz_v2[6];
 
 
         /* absorb */
-        const unsigned int shell = fast_sqrt(k) * shells_per_mfp;
+        const unsigned int shell1 = fast_sqrt(k1) * shells_per_mfp;
+        const unsigned int shell2 = fast_sqrt(k2) * shells_per_mfp;
 
-        int shell_index = shell > SHELLS - 1 ? SHELLS - 1 : shell;
+        int shell_index1 = shell1 > SHELLS - 1 ? SHELLS - 1 : shell1;
+        int shell_index2 = shell2 > SHELLS - 1 ? SHELLS - 1 : shell2;
+
         /* easy way */
-        /*
-        heat[shell_index] += weight * (1.0f - albedo);
-        heat2[shell_index] += weight * weight * (1.0f - albedo) * (1.0f - albedo);
-        weight *= albedo;
-        */
-        /*  */
+        float tmp1 = weight1 * (1.0f - albedo);
+        float tmp2 = weight2 * (1.0f - albedo);
 
-
-        /*using avx2 operations*/
-        __m256 heat_v = _mm256_load_ps(&heat[shell]);
-        __m256 heat2_v = _mm256_load_ps(&heat2[shell]);
-
-        __m256 weight_v = _mm256_set1_ps(weight);
-        __m256 tmp_v = _mm256_sub_ps(one_v, albedo_v);
-        tmp_v = _mm256_mul_ps(tmp_v, weight_v);
-        __m256 tmp2_v = _mm256_mul_ps(tmp_v, tmp_v);
-        // tmp_v to float
-
-        heat_v = _mm256_add_ps(heat_v, tmp_v);
-        heat2_v = _mm256_add_ps(heat2_v, tmp2_v);
-        // save heat and heat2
-
-        heat[shell_index] = _mm256_cvtss_f32(heat_v);
-        heat2[shell_index] = _mm256_cvtss_f32(heat2_v);
-
-        weight_v = _mm256_mul_ps(weight_v, albedo_v);
-        weight = _mm256_cvtss_f32(weight_v);
-        /*  */
+        heat[shell_index1] += tmp1;
+        heat[shell_index2] += tmp2;
+        heat2[shell_index1] += tmp1 * tmp1;
+        heat2[shell_index2] += tmp2 * tmp2;
+        weight1 *= albedo;
+        weight2 *= albedo;
 
 
         /* New direction, rejection method */
 
-        __m256 xi;
+        float xi1, xi2, xi3, xi4;
+        bool out1 = false;
+        bool out2 = false;
+
+        xi1 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+        xi2 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+        xi3 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+        xi4 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+        t1 = xi1 * xi1 + xi2 * xi2;
+        t2 = xi3 * xi3 + xi4 * xi4;
 
         do {
-            /*
-            xi1 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-            xi2 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;*/
+            if (t1 - 1.0f > 0) {
+                xi1 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+                xi2 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+                t1 = xi1 * xi1 + xi2 * xi2;
+            } else
+                out1 = true;
 
-            // load 2 random numbers in a __m256 register
-            // xi = __mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(2.0f),_mm256_set1_ps(very_fast_rand() / (float)32768)),_mm256_set1_ps(-1.0f));
-            // create a mm256 register that has 2.0f * very_fast_rand() / (float)32768 - 1.0f on all 8 positions
-            xi = _mm256_set1_ps(2.0f * very_fast_rand() / (float)32768 - 1.0f);
+            if (t2 - 1.0f > 0) {
+                xi3 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+                xi4 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
+                t2 = xi3 * xi3 + xi4 * xi4;
+            } else
+                out2 = true;
 
-            // create a mask to check if xi1^2 + xi2^2 > 1
-            //__m256 mask = _mm256_cmp_ps(_mm256_add_ps(_mm256_mul_ps(xi,xi),_mm256_mul_ps(xi,xi)),_mm256_set1_ps(1.0f),_CMP_GT_OQ);
-            // calculate t = xi1^2 + xi2^2
-            //  t = xi[0]^2 + xi[1]^2
-            // t = xi[0] * xi[0] + xi[1] * xi[1];
-            t_v = _mm256_mul_ps(xi, xi);
-            t_v = _mm256_hadd_ps(t_v, t_v);
+        } while (!(out1 && out2));
 
-        } while (1.0f < t_v[0]);
-        float u = 2.0f * t_v[0] - 1.0f;
-        float v = xi[0] * fast_sqrt((1.0f - u * u) / t);
-        float w = xi[1] * fast_sqrt((1.0f - u * u) / t);
 
-        uvw_v = _mm256_set_ps(u, v, w, 0.0f, u, v, w, 0.0f);
+        u1 = 2.0f * t1 - 1.0f;
+        u2 = 2.0f * t2 - 1.0f;
+        v1 = xi1 * fast_sqrt((1.0f - u1 * u1) / t1);
+        v2 = xi3 * fast_sqrt((1.0f - u2 * u2) / t2);
+        w1 = xi2 * fast_sqrt((1.0f - u1 * u1) / t1);
+        w2 = xi4 * fast_sqrt((1.0f - u2 * u2) / t2);
 
-        if (weight < 0.001f) { /* roulette */
+
+        uvw_v = _mm256_set_ps(u1, v1, w1, 0.0f, u2, v2, w2, 0.0f);
+
+        if (fmax(weight1, weight2) < 0.001f) { /* roulette */
             if (very_fast_rand() / (float)32768 > 0.1f)
                 break;
-            weight /= 0.1f;
+            weight1 /= 0.1f;
+            weight2 /= 0.1f;
         }
     }
 }
@@ -467,7 +477,8 @@ int main(void)
     // start timer
     double start = wtime();
     // simulation
-    for (unsigned int i = 0; i < PHOTONS; ++i) {
+    for (unsigned int i = 0; i < PHOTONS / 2; ++i) {
+
         photon();
     }
     // stop timer
