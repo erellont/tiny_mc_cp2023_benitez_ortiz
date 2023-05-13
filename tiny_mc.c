@@ -435,8 +435,8 @@ static void photon(void)
 
         } while (1.0f < t_v[0]);
         float u = 2.0f * t_v[0] - 1.0f;
-        float v = xi[0] * fast_sqrt((1.0f - u * u) / t);
-        float w = xi[1] * fast_sqrt((1.0f - u * u) / t);
+        float v = xi[0] * fast_sqrt((1.0f - u * u) / t_v[0]);
+        float w = xi[1] * fast_sqrt((1.0f - u * u) / t_v[0]);
 
         uvw_v = _mm256_set_ps(u, v, w, 0.0f, u, v, w, 0.0f);
 
