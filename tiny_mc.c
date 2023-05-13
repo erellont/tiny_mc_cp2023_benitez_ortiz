@@ -439,7 +439,6 @@ static void photon(void)
         } while (!(out1 && out2));
 
 
-<<<<<<< HEAD
         u1 = 2.0f * t1 - 1.0f;
         u2 = 2.0f * t2 - 1.0f;
         v1 = xi1 * fast_sqrt((1.0f - u1 * u1) / t1);
@@ -451,34 +450,6 @@ static void photon(void)
         uvw_v = _mm256_set_ps(u1, v1, w1, 0.0f, u2, v2, w2, 0.0f);
 
         if (fmax(weight1, weight2) < 0.001f) { /* roulette */
-=======
-        do {
-            /*
-            xi1 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-            xi2 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;*/
-
-            // load 2 random numbers in a __m256 register
-            // xi = __mm256_add_ps(_mm256_mul_ps(_mm256_set1_ps(2.0f),_mm256_set1_ps(very_fast_rand() / (float)32768)),_mm256_set1_ps(-1.0f));
-            // create a mm256 register that has 2.0f * very_fast_rand() / (float)32768 - 1.0f on all 8 positions
-            xi = _mm256_set1_ps(2.0f * very_fast_rand() / (float)32768 - 1.0f);
-
-            // create a mask to check if xi1^2 + xi2^2 > 1
-            //__m256 mask = _mm256_cmp_ps(_mm256_add_ps(_mm256_mul_ps(xi,xi),_mm256_mul_ps(xi,xi)),_mm256_set1_ps(1.0f),_CMP_GT_OQ);
-            // calculate t = xi1^2 + xi2^2
-            //  t = xi[0]^2 + xi[1]^2
-            // t = xi[0] * xi[0] + xi[1] * xi[1];
-            t_v = _mm256_mul_ps(xi, xi);
-            t_v = _mm256_hadd_ps(t_v, t_v);
-
-        } while (1.0f < t_v[0]);
-        float u = 2.0f * t_v[0] - 1.0f;
-        float v = xi[0] * fast_sqrt((1.0f - u * u) / t_v[0]);
-        float w = xi[1] * fast_sqrt((1.0f - u * u) / t_v[0]);
-
-        uvw_v = _mm256_set_ps(u, v, w, 0.0f, u, v, w, 0.0f);
-
-        if (weight < 0.001f) { /* roulette */
->>>>>>> 8200428286376c96f5aca551d9dabfd465438ffc
             if (very_fast_rand() / (float)32768 > 0.1f)
                 break;
             weight1 /= 0.1f;
