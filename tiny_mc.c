@@ -34,6 +34,7 @@ char t3[] = "CPU version, adapted for PEAGPGPU by Gustavo Castellano"
 
 static float heat[SHELLS];
 static float heat2[SHELLS];
+static float maptable[32768];
 
 
 static unsigned int g_seed;
@@ -325,6 +326,22 @@ inline __m256 fast_sqrt_intr(__m256 x)
 }
 
 
+// create maptable for values between 0 and rand() in range of [0,2^15-1]/2^15
+
+
+void create_maptable()
+{
+    for (int i = 0; i < 32768; i++) {
+        maptable[i] = very_very_fast_logf_avx2(i / (float)32767);
+    }
+}
+
+float get_maptable(int i)
+{
+    return maptable[i];
+}
+
+
 /***
  * Photon
  ***/
@@ -334,6 +351,8 @@ static void photon(void)
 {
     const float albedo = MU_S / (MU_S + MU_A);
     const float shells_per_mfp = 1e4 / MICRONS_PER_SHELL / (MU_A + MU_S);
+    const __m256 albedo_v = _mm256_set1_ps(albedo);
+    const __m256 shells_per_mfp_v = _mm256_set1_ps(shells_per_mfp);
 
     /* launch */
     // float x1 = 0.0f;
@@ -343,117 +362,178 @@ static void photon(void)
     // float y2 = 0.0f;
     // float z2 = 0.0f;
 
-    // declar 1 avx register with x,y,z in it
-    __m256 xyz_v = _mm256_setzero_ps();
+    // create a vector with x1 y1 z1 (and x2,y2,z2)
 
 
-    float u1 = 0.0f;
-    float v1 = 0.0f;
-    float w1 = 1.0f;
+    __m256 x_v = _mm256_setzero_ps();
+    __m256 y_v = _mm256_setzero_ps();
+    __m256 z_v = _mm256_setzero_ps();
 
-    float u2 = 0.0f;
-    float v2 = 0.0f;
-    float w2 = 1.0f;
+    // craete a 8-vector of speed in u,v,w
 
-    __m256 uvw_v = _mm256_set_ps(0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
-
-    float weight1 = 1.0f;
-    float weight2 = 1.0f;
+    __m256 u_v = _mm256_setzero_ps();
+    __m256 v_v = _mm256_setzero_ps();
+    __m256 w_v = _mm256_set1_ps(1.0f);
 
 
-    /* AVX2 constants */
-    const __m256 albedo_v = _mm256_set1_ps(albedo);
-    const __m256 one_v = _mm256_set1_ps(1.0f);
+    // create speed vectors of both photons
+
+
+    // both photons have the same initial weight
+
+    __m256 weights_v = _mm256_set1_ps(1.0f);
+
 
     for (;;) {
         /* move */
-        const float rand1 = very_fast_rand() / (float)32768;
-        const float rand2 = very_fast_rand() / (float)32768;
-        float t1 = -very_very_fast_logf_avx2(rand1);
-        float t2 = -very_very_fast_logf_avx2(rand2);
-        // float t = -simpson38(rand1);
+
+        // 2 different random times for both photons
+        float t_s[8] = { -get_maptable(very_fast_rand()),
+                         -get_maptable(very_fast_rand()),
+                         -get_maptable(very_fast_rand()),
+                         -get_maptable(very_fast_rand()),
+                         -get_maptable(very_fast_rand()),
+                         -get_maptable(very_fast_rand()),
+                         -get_maptable(very_fast_rand()),
+                         -get_maptable(very_fast_rand()) };
+
+
         /*
         x += t * u;
         y += t * v;
         z += t * w;
         */
-        // calculate x+t*u, y+t*v, z+t*w and store them in xyz_v
-        __m256 t_v = _mm256_set_ps(t1, t1, t1, t1, t2, t2, t2, t2);
-        xyz_v = _mm256_fmadd_ps(t_v, uvw_v, xyz_v);
+        // using avx2 to do the above calculation
+        __m256 t_v = _mm256_loadu_ps(t_s);
+
+        x_v = _mm256_fmadd_ps(t_v, u_v, x_v);
+        y_v = _mm256_fmadd_ps(t_v, v_v, y_v);
+        z_v = _mm256_fmadd_ps(t_v, w_v, z_v);
+
+        x_v = _mm256_mul_ps(x_v, x_v);
+        y_v = _mm256_mul_ps(y_v, y_v);
+        z_v = _mm256_mul_ps(z_v, z_v);
 
 
         // do xyz_v[0]^2 + xyz_v[1]^2 + xyz_v[2]^2 and save it in a float using avx2
 
-        __m256 xyz_v2 = _mm256_mul_ps(xyz_v, xyz_v);
-        float k1 = xyz_v2[0] + xyz_v2[1] + xyz_v2[2];
-        float k2 = xyz_v2[4] + xyz_v2[5] + xyz_v2[6];
+
+        // k1 and k2 are the distance to the origin of each photons
+        // float k1 = xyz_v2[0] + xyz_v2[1] + xyz_v2[2];
+        // float k2 = xyz_v2[4] + xyz_v2[5] + xyz_v2[6];
+
+        //__m256 k_v = x_v + y_v + z_v;
 
 
         /* absorb */
-        const unsigned int shell1 = fast_sqrt(k1) * shells_per_mfp;
-        const unsigned int shell2 = fast_sqrt(k2) * shells_per_mfp;
+        __m256 sqrt_k_v = _mm256_sqrt_ps(x_v + y_v + z_v);
+        __m256 shell_v = _mm256_mul_ps(sqrt_k_v, shells_per_mfp_v);
 
-        int shell_index1 = shell1 > SHELLS - 1 ? SHELLS - 1 : shell1;
-        int shell_index2 = shell2 > SHELLS - 1 ? SHELLS - 1 : shell2;
+        //
+        // per lane on shell_v if shell_v > SHELLS - 1 then shell_v = SHELLS - 1
+        __m256 shell_indexes = _mm256_min_ps(shell_v, _mm256_set1_ps(SHELLS - 1));
 
-        /* easy way */
-        float tmp1 = weight1 * (1.0f - albedo);
-        float tmp2 = weight2 * (1.0f - albedo);
+        // transform shell_indexes to int and save it in shell_indexes_s
 
+        int shell_indexes_s[8] = { (int)shell_indexes[0],
+                                   (int)shell_indexes[1],
+                                   (int)shell_indexes[2],
+                                   (int)shell_indexes[3],
+                                   (int)shell_indexes[4],
+                                   (int)shell_indexes[5],
+                                   (int)shell_indexes[6],
+                                   (int)shell_indexes[7] };
+
+
+        // calculate the new heat of each shell
+        __m256 tmp = _mm256_mul_ps(weights_v, _mm256_sub_ps(_mm256_set1_ps(1.0f), albedo_v));
+
+
+        __m256 heat_v1 = _mm256_set_ps(heat[shell_indexes_s[0]], heat[shell_indexes_s[1]], heat[shell_indexes_s[2]],
+                                       heat[shell_indexes_s[3]], heat[shell_indexes_s[4]], heat[shell_indexes_s[5]], heat[shell_indexes_s[6]], heat[shell_indexes_s[7]]);
+        __m256 heat_v2 = _mm256_set_ps(heat[shell_indexes_s[0]], heat[shell_indexes_s[1]], heat[shell_indexes_s[2]],
+                                       heat[shell_indexes_s[3]], heat[shell_indexes_s[4]], heat[shell_indexes_s[5]], heat[shell_indexes_s[6]], heat[shell_indexes_s[7]]);
+
+
+        heat_v1 = _mm256_add_ps(heat_v1, tmp);
+        heat_v2 = _mm256_add_ps(heat_v2, _mm256_mul_ps(tmp, tmp));
+        weights_v = _mm256_mul_ps(weights_v, albedo_v);
+
+        for (int i = 0; i < 8; i++) {
+            heat[shell_indexes_s[i]] = heat_v1[i];
+            heat2[shell_indexes_s[i]] = heat_v2[i];
+        }
+
+
+        /*
         heat[shell_index1] += tmp1;
         heat[shell_index2] += tmp2;
         heat2[shell_index1] += tmp1 * tmp1;
         heat2[shell_index2] += tmp2 * tmp2;
         weight1 *= albedo;
-        weight2 *= albedo;
-
+        weight2 *= albedo;*/
 
         /* New direction, rejection method */
 
-        float xi1, xi2, xi3, xi4;
-        bool out1 = false;
-        bool out2 = false;
 
-        xi1 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-        xi2 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-        xi3 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-        xi4 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-        t1 = xi1 * xi1 + xi2 * xi2;
-        t2 = xi3 * xi3 + xi4 * xi4;
+        __m256 xi_v1 = _mm256_set_ps(2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f);
+
+        __m256 xi_v2 = _mm256_set_ps(2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f,
+                                     2.0f * very_fast_rand() / (float)32768 - 1.0f);
+
+
+        t_v = _mm256_add_ps(_mm256_mul_ps(xi_v1, xi_v1), _mm256_mul_ps(xi_v2, xi_v2));
+
+
+        __m256 mask_v = _mm256_cmp_ps(t_v, _mm256_set1_ps(1.0f), _CMP_GT_OQ);
 
         do {
-            if (t1 - 1.0f > 0) {
-                xi1 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-                xi2 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-                t1 = xi1 * xi1 + xi2 * xi2;
-            } else
-                out1 = true;
-
-            if (t2 - 1.0f > 0) {
-                xi3 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-                xi4 = 2.0f * very_fast_rand() / (float)32768 - 1.0f;
-                t2 = xi3 * xi3 + xi4 * xi4;
-            } else
-                out2 = true;
-
-        } while (!(out1 && out2));
+            // per lane if mask_v is true, then calculate new xi_v1[i] and xi_v2[i]
+            // else do nothing
+            xi_v1 = _mm256_blendv_ps(xi_v1, _mm256_set1_ps(2.0f * very_fast_rand() / (float)32768 - 1.0f), mask_v);
+            xi_v2 = _mm256_blendv_ps(xi_v2, _mm256_set1_ps(2.0f * very_fast_rand() / (float)32768 - 1.0f), mask_v);
+            // recalculate t_v
+            t_v = _mm256_add_ps(_mm256_mul_ps(xi_v1, xi_v1), _mm256_mul_ps(xi_v2, xi_v2));
+            // recalculate mask_v
+            mask_v = _mm256_cmp_ps(t_v, _mm256_set1_ps(1.0f), _CMP_GT_OQ);
 
 
-        u1 = 2.0f * t1 - 1.0f;
-        u2 = 2.0f * t2 - 1.0f;
-        v1 = xi1 * fast_sqrt((1.0f - u1 * u1) / t1);
-        v2 = xi3 * fast_sqrt((1.0f - u2 * u2) / t2);
-        w1 = xi2 * fast_sqrt((1.0f - u1 * u1) / t1);
-        w2 = xi4 * fast_sqrt((1.0f - u2 * u2) / t2);
+        } while (_mm256_movemask_ps(mask_v) != 0);
+
+        u_v = _mm256_sub_ps(_mm256_mul_ps(_mm256_set1_ps(2.0f), t_v), _mm256_set1_ps(1.0f));
+        v_v = _mm256_mul_ps(xi_v1, _mm256_sqrt_ps(_mm256_div_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(u_v, u_v)), t_v)));
+        w_v = _mm256_mul_ps(xi_v2, _mm256_sqrt_ps(_mm256_div_ps(_mm256_sub_ps(_mm256_set1_ps(1.0f), _mm256_mul_ps(u_v, u_v)), t_v)));
+
+        // get horizontal max of weights_v
+        //
+        float arr[8];
+        _mm256_storeu_ps(arr, weights_v);
+        // max of arr
+        float maxv = arr[0];
+        for (int i = 1; i < 8; i++) {
+            if (arr[i] > maxv) {
+                maxv = arr[i];
+            }
+        }
 
 
-        uvw_v = _mm256_set_ps(u1, v1, w1, 0.0f, u2, v2, w2, 0.0f);
-
-        if (fmax(weight1, weight2) < 0.001f) { /* roulette */
+        if (maxv < 0.001f) { /* roulette */
             if (very_fast_rand() / (float)32768 > 0.1f)
                 break;
-            weight1 /= 0.1f;
-            weight2 /= 0.1f;
+            weights_v = _mm256_div_ps(weights_v, _mm256_set1_ps(0.1f));
         }
     }
 }
@@ -477,8 +557,12 @@ int main(void)
     // start timer
     double start = wtime();
     // simulation
-    for (unsigned int i = 0; i < PHOTONS / 2; ++i) {
+    // start maptable
+    create_maptable();
 
+    // use openmp to parallelize
+    // #pragma omp parallel for
+    for (unsigned int i = 0; i < PHOTONS / 8; ++i) {
         photon();
     }
     // stop timer
