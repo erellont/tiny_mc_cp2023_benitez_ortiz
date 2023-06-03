@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <immintrin.h>
 #include <math.h>
+#include <omp.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,8 +33,8 @@ char t3[] = "CPU version, adapted for PEAGPGPU by Gustavo Castellano"
 
 // global state, heat and heat square in each
 
-static float heat[SHELLS];
-static float heat2[SHELLS];
+static float heat[48 * SHELLS];
+static float heat2[48 * SHELLS];
 static float maptable[32768];
 
 
@@ -347,23 +348,14 @@ float get_maptable(int i)
  ***/
 
 
-static void photon(void)
+static void photon(int tid)
 {
     const float albedo = MU_S / (MU_S + MU_A);
     const float shells_per_mfp = 1e4 / MICRONS_PER_SHELL / (MU_A + MU_S);
     const __m256 albedo_v = _mm256_set1_ps(albedo);
     const __m256 shells_per_mfp_v = _mm256_set1_ps(shells_per_mfp);
 
-    /* launch */
-    // float x1 = 0.0f;
-    // float y1 = 0.0f;
-    // float z1 = 0.0f;
-    // float x2 = 0.0f;
-    // float y2 = 0.0f;
-    // float z2 = 0.0f;
-
-    // create a vector with x1 y1 z1 (and x2,y2,z2)
-
+    // create a 8-vector of position in x,y,z
 
     __m256 x_v = _mm256_setzero_ps();
     __m256 y_v = _mm256_setzero_ps();
@@ -374,9 +366,6 @@ static void photon(void)
     __m256 u_v = _mm256_setzero_ps();
     __m256 v_v = _mm256_setzero_ps();
     __m256 w_v = _mm256_set1_ps(1.0f);
-
-
-    // create speed vectors of both photons
 
 
     // both photons have the same initial weight
@@ -397,7 +386,6 @@ static void photon(void)
                          -get_maptable(very_fast_rand()),
                          -get_maptable(very_fast_rand()) };
 
-
         /*
         x += t * u;
         y += t * v;
@@ -409,6 +397,9 @@ static void photon(void)
         x_v = _mm256_fmadd_ps(t_v, u_v, x_v);
         y_v = _mm256_fmadd_ps(t_v, v_v, y_v);
         z_v = _mm256_fmadd_ps(t_v, w_v, z_v);
+
+        // get max between x_v y_v z_v vertically and save it to max_v
+
 
         x_v = _mm256_mul_ps(x_v, x_v);
         y_v = _mm256_mul_ps(y_v, y_v);
@@ -447,21 +438,55 @@ static void photon(void)
 
         // calculate the new heat of each shell
         __m256 tmp = _mm256_mul_ps(weights_v, _mm256_sub_ps(_mm256_set1_ps(1.0f), albedo_v));
+        __m256 tmp_2 = _mm256_mul_ps(tmp, tmp);
 
 
-        __m256 heat_v1 = _mm256_set_ps(heat[shell_indexes_s[0]], heat[shell_indexes_s[1]], heat[shell_indexes_s[2]],
-                                       heat[shell_indexes_s[3]], heat[shell_indexes_s[4]], heat[shell_indexes_s[5]], heat[shell_indexes_s[6]], heat[shell_indexes_s[7]]);
-        __m256 heat_v2 = _mm256_set_ps(heat[shell_indexes_s[0]], heat[shell_indexes_s[1]], heat[shell_indexes_s[2]],
-                                       heat[shell_indexes_s[3]], heat[shell_indexes_s[4]], heat[shell_indexes_s[5]], heat[shell_indexes_s[6]], heat[shell_indexes_s[7]]);
+        __m256 heat_v1 = _mm256_set_ps(heat[tid * SHELLS + shell_indexes_s[0]],
+                                       heat[tid * SHELLS + shell_indexes_s[1]],
+                                       heat[tid * SHELLS + shell_indexes_s[2]],
+                                       heat[tid * SHELLS + shell_indexes_s[3]],
+                                       heat[tid * SHELLS + shell_indexes_s[4]],
+                                       heat[tid * SHELLS + shell_indexes_s[5]],
+                                       heat[tid * SHELLS + shell_indexes_s[6]],
+                                       heat[tid * SHELLS + shell_indexes_s[7]]);
+
+        __m256 heat_v2 = _mm256_set_ps(heat[tid * SHELLS + shell_indexes_s[0]],
+                                       heat[tid * SHELLS + shell_indexes_s[1]],
+                                       heat[tid * SHELLS + shell_indexes_s[2]],
+                                       heat[tid * SHELLS + shell_indexes_s[3]],
+                                       heat[tid * SHELLS + shell_indexes_s[4]],
+                                       heat[tid * SHELLS + shell_indexes_s[5]],
+                                       heat[tid * SHELLS + shell_indexes_s[6]],
+                                       heat[tid * SHELLS + shell_indexes_s[7]]);
 
 
         heat_v1 = _mm256_add_ps(heat_v1, tmp);
-        heat_v2 = _mm256_add_ps(heat_v2, _mm256_mul_ps(tmp, tmp));
+        heat_v2 = _mm256_add_ps(heat_v2, tmp_2);
         weights_v = _mm256_mul_ps(weights_v, albedo_v);
 
+        // create a dictionary of updated shells
+        int updated_shells[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+
         for (int i = 0; i < 8; i++) {
-            heat[shell_indexes_s[i]] = heat_v1[i];
-            heat2[shell_indexes_s[i]] = heat_v2[i];
+            // check if shell_indexes_s[i] is in updated_shells
+            bool found = false;
+            for (int j = 0; j < 8; j++) {
+                if (updated_shells[j] == shell_indexes_s[i]) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) {
+                heat[tid * SHELLS + shell_indexes_s[i]] += tmp[i];
+                heat2[tid * SHELLS + shell_indexes_s[i]] += tmp_2[i];
+
+                break;
+            } else {
+                heat[tid * SHELLS + shell_indexes_s[i]] = heat_v1[i];
+                heat2[tid * SHELLS + shell_indexes_s[i]] = heat_v2[i];
+                updated_shells[i] = shell_indexes_s[i];
+            }
         }
 
 
@@ -560,11 +585,55 @@ int main(void)
     // start maptable
     create_maptable();
 
-    // use openmp to parallelize
-    // #pragma omp parallel for
+    float totalheat[SHELLS] = { 0.0f };
+    float totalheat2[SHELLS] = { 0.0f };
+    /*
+        #pragma omp parallel private(heat,heat2) shared(totalheat1,totalheat2)
+        {
+            #pragma omp for schedule(dynamic, 1000) nowait
+            for (unsigned int i = 0; i < PHOTONS / 8; ++i) {
+                photon();
+            }
+            #pragma omp critical
+            {
+                totalheat1 += heat;
+                totalheat2 += heat2;
+            }
+
+        }*/
+
+    // declare heat and heat2
+
+
+    // get number of threads
+    int nthreads = omp_get_max_threads();
+    printf("nthreads = %d\n", nthreads);
+
+    // declare heat and heat2 for each thread
+
+
+#pragma omp parallel for shared(heat, heat2)
     for (unsigned int i = 0; i < PHOTONS / 8; ++i) {
-        photon();
+        // get current thread
+        int tid = omp_get_thread_num();
+        photon(tid);
     }
+
+    // reduce heat and heat2
+
+
+    // time the following for
+    double start2 = wtime();
+    for (int i = 0; i < nthreads; i++) {
+        for (int j = 0; j < SHELLS; j++) {
+            totalheat[j] += heat[i * SHELLS + j];
+            totalheat2[j] += heat2[i * SHELLS + j];
+        }
+    }
+    double end2 = wtime();
+    printf("time for reduction = %lf\n", end2 - start2);
+
+
     // stop timer
     double end = wtime();
     assert(start <= end);
@@ -578,10 +647,11 @@ int main(void)
     float t = 4.0f * M_PI * powf(MICRONS_PER_SHELL, 3.0f) * PHOTONS / 1e12;
     for (unsigned int i = 0; i < SHELLS - 1; ++i) {
         printf("%6.0f\t%12.5f\t%12.5f\n", i * (float)MICRONS_PER_SHELL,
-               heat[i] / t / (i * i + i + 1.0 / 3.0),
-               fast_sqrt(heat2[i] - heat[i] * heat[i] / PHOTONS) / t / (i * i + i + 1.0f / 3.0f));
+               totalheat[i] / t / (i * i + i + 1.0 / 3.0),
+               fast_sqrt(totalheat2[i] - totalheat[i] * totalheat[i] / PHOTONS) / t / (i * i + i + 1.0f / 3.0f));
     }
-    printf("# extra\t%12.5f\n", heat[SHELLS - 1] / PHOTONS);
+    printf("# extra\t%12.5f\n", totalheat[SHELLS - 1] / PHOTONS);
+
 
     // print to csv file to compare later
     FILE* fp;
